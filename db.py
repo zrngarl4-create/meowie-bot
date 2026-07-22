@@ -1,4 +1,4 @@
-import os
+ import os
 import datetime
 import psycopg2
 import psycopg2.extras
@@ -10,10 +10,7 @@ def get_conn():
     return psycopg2.connect(DATABASE_URL)
 
 
-BASE_COOLDOWN_SECONDS = 10
-COOLDOWN_REDUCTION_PER_LEVEL = 1
-MIN_COOLDOWN_SECONDS = 3
-
+COOLDOWN_SECONDS = 300  # فاصله ثابت بین هر میو: ۵ دقیقه
 EXP_NEEDED_PER_LEVEL = 5
 
 
@@ -34,11 +31,6 @@ def get_or_create_user(user_id, username):
     return user
 
 
-def get_cooldown_seconds(level):
-    cd = BASE_COOLDOWN_SECONDS - (level - 1) * COOLDOWN_REDUCTION_PER_LEVEL
-    return max(cd, MIN_COOLDOWN_SECONDS)
-
-
 def exp_needed_for_next_level(level):
     return level * EXP_NEEDED_PER_LEVEL
 
@@ -51,11 +43,10 @@ def do_meow(user_id, username):
     now = datetime.datetime.utcnow()
     last = user["last_meow_at"]
 
-    cooldown = get_cooldown_seconds(user["level"])
     if last:
         elapsed = (now - last).total_seconds()
-        if elapsed < cooldown:
-            remaining = round(cooldown - elapsed, 1)
+        if elapsed < COOLDOWN_SECONDS:
+            remaining = round(COOLDOWN_SECONDS - elapsed)
             return False, {"reason": "cooldown", "remaining": remaining}
 
     points_earned = random.randint(1, 100)
