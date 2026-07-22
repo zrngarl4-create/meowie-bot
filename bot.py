@@ -18,7 +18,7 @@ def home():
 
 
 def get_updates(offset_id=None):
-    payload = {}
+    payload = {"limit": 10}
     if offset_id:
         payload["offset_id"] = offset_id
     try:
@@ -83,7 +83,6 @@ def bot_loop():
             updates = data.get("updates", [])
 
             for update in updates:
-                offset_id = update.get("update_id", offset_id)
                 message = update.get("new_message") or update.get("message") or {}
 
                 chat_id = update.get("chat_id") or message.get("chat_id")
@@ -95,6 +94,9 @@ def bot_loop():
                     print(f"پیام از {sender_name} ({sender_id}): {text}")
                     handle_message(chat_id, sender_id, sender_name, text)
 
+            # مهم: آفست رو برای دفعه بعد آپدیت کن تا پیام‌های قبلی دوباره پردازش نشن
+            offset_id = data.get("next_offset_id", offset_id)
+
         time.sleep(3)
 
 
@@ -102,3 +104,4 @@ if __name__ == "__main__":
     threading.Thread(target=bot_loop, daemon=True).start()
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+    
