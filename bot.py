@@ -50,7 +50,7 @@ def get_user_display_name(user_id):
         resp = requests.post(
             f"{BASE_URL}/getChat", json={"chat_id": user_id}, timeout=15
         )
-        result = resp.json()
+        print("RAW GETCHAT:", result)
         chat = result.get("data", {}).get("chat", {})
 
         first_name = chat.get("first_name", "")
