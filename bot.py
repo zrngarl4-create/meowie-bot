@@ -44,6 +44,9 @@ def send_message(chat_id, text, reply_to_message_id=None):
 def handle_message(chat_id, sender_id, message_id, text):
     text = (text or "").strip()
 
+    # هر پیام تو یه گروه، یعنی این کاربر عضو فعال اون گروهه (برای لیدربرد گروهی)
+    db.record_group_membership(chat_id, sender_id)
+
     # دستور تنظیم اسم: "تنظیم میویی <اسم>"
     if text.startswith(SET_NAME_PREFIX):
         new_name = text[len(SET_NAME_PREFIX):].strip()
@@ -95,6 +98,34 @@ def handle_message(chat_id, sender_id, message_id, text):
                     reply_to_message_id=message_id,
                 )
 
+    elif text == "لیدربرد میویی":
+        rows = db.get_leaderboard_group(chat_id, order_by="points", limit=10)
+        if not rows:
+            send_message(chat_id, "هنوز کسی تو این گروه لیدربرد نداره! اول میو کن 🐾", reply_to_message_id=message_id)
+            return
+        medals = ["🥇", "🥈", "🥉"]
+        lines = ["🏆 لیدربرد ثروتمندترین پیشی‌های این گروه:\n"]
+        for i, row in enumerate(rows):
+            rank = medals[i] if i < 3 else f"{i + 1}."
+            lines.append(
+                f"{rank} {row['username']} — 🪙 {row['points']} | ⭐️ سطح {row['level']}"
+            )
+        send_message(chat_id, "\n".join(lines), reply_to_message_id=message_id)
+
+    elif text == "لیدربرد میویی کل":
+        rows = db.get_leaderboard_global(order_by="points", limit=10)
+        if not rows:
+            send_message(chat_id, "هنوز کسی تو لیدربرد نیست! اول میو کن 🐾", reply_to_message_id=message_id)
+            return
+        medals = ["🥇", "🥈", "🥉"]
+        lines = ["👑 لیدربرد ثروتمندترین پیشی‌های کل دنیای میویی:\n"]
+        for i, row in enumerate(rows):
+            rank = medals[i] if i < 3 else f"{i + 1}."
+            lines.append(
+                f"{rank} {row['username']} — 🪙 {row['points']} | ⭐️ سطح {row['level']}"
+            )
+        send_message(chat_id, "\n".join(lines), reply_to_message_id=message_id)
+
     elif text == "میوهام":
         display_name = sender_name or "ناشناس"
         profile = db.get_profile(sender_id)
@@ -112,8 +143,11 @@ def handle_message(chat_id, sender_id, message_id, text):
 
 
 def bot_loop():
-    offset_id = None
-    print("بات میویی شروع به کار کرد...")
+    db.ensure_offset_table()
+    db.ensure_extra_columns()
+    db.ensure_group_members_table()
+    offset_id = db.get_offset()
+    print("بات میویی شروع به کار کرد... offset ذخیره‌شده:", offset_id)
     while True:
         result = get_updates(offset_id)
 
@@ -135,7 +169,10 @@ def bot_loop():
                     print(f"پیام از {sender_id}: {text}")
                     handle_message(chat_id, sender_id, message_id, text)
 
-            offset_id = data.get("next_offset_id", offset_id)
+            new_offset_id = data.get("next_offset_id", offset_id)
+            if new_offset_id != offset_id:
+                offset_id = new_offset_id
+                db.set_offset(offset_id)
 
         time.sleep(3)
 
