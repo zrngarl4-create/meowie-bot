@@ -50,6 +50,7 @@ def get_user_display_name(user_id):
         resp = requests.post(
             f"{BASE_URL}/getChat", json={"chat_id": user_id}, timeout=15
         )
+        result = resp.json()
         print("RAW GETCHAT:", result)
         chat = result.get("data", {}).get("chat", {})
 
@@ -67,7 +68,9 @@ def get_user_display_name(user_id):
     except Exception as e:
         print("خطا در گرفتن اطلاعات کاربر:", e)
 
-    user_name_cache[user_id] = name
+    # فقط وقتی اسم واقعی پیدا شد کش کن، وگرنه "ناشناس" برای همیشه می‌مونه
+    if name != "ناشناس":
+        user_name_cache[user_id] = name
     return name
 
 
@@ -146,3 +149,4 @@ if __name__ == "__main__":
     threading.Thread(target=bot_loop, daemon=True).start()
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+    
