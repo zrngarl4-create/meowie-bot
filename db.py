@@ -14,7 +14,7 @@ COOLDOWN_SECONDS = 300  # فاصله ثابت بین هر میو: ۵ دقیقه
 EXP_NEEDED_PER_LEVEL = 5
 
 
-def get_or_create_user(user_id, username):
+def get_or_create_user(user_id, username=None):
     conn = get_conn()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute("SELECT * FROM meowie_users WHERE user_id = %s", (user_id,))
@@ -29,6 +29,31 @@ def get_or_create_user(user_id, username):
     cur.close()
     conn.close()
     return user
+
+
+def get_username(user_id):
+    conn = get_conn()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute("SELECT username FROM meowie_users WHERE user_id = %s", (user_id,))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    if row and row["username"]:
+        return row["username"]
+    return None
+
+
+def set_username(user_id, username):
+    get_or_create_user(user_id, username)
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE meowie_users SET username = %s WHERE user_id = %s",
+        (username, user_id),
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
 
 
 def exp_needed_for_next_level(level):
@@ -62,13 +87,15 @@ def do_meow(user_id, username):
 
     conn = get_conn()
     cur = conn.cursor()
+    # توجه: دیگه username رو اینجا آپدیت نمی‌کنیم تا اسمی که کاربر
+    # خودش با "تنظیم میویی" ثبت کرده پاک نشه.
     cur.execute(
         """
         UPDATE meowie_users
-        SET points = %s, exp = %s, level = %s, last_meow_at = %s, username = %s
+        SET points = %s, exp = %s, level = %s, last_meow_at = %s
         WHERE user_id = %s
         """,
-        (new_points, new_exp, new_level, now, username, user_id),
+        (new_points, new_exp, new_level, now, user_id),
     )
     conn.commit()
     cur.close()
@@ -92,3 +119,4 @@ def get_profile(user_id):
     cur.close()
     conn.close()
     return user
+    
