@@ -11,7 +11,7 @@ BASE_URL = f"https://botapi.rubika.ir/v3/{TOKEN}"
 
 app = Flask(__name__)
 
-user_name_cache = {}
+SET_NAME_PREFIX = "تنظیم میویی"
 
 
 @app.route("/")
@@ -41,44 +41,38 @@ def send_message(chat_id, text, reply_to_message_id=None):
         print("خطا در ارسال پیام:", e)
 
 
-def get_user_display_name(user_id):
-    if user_id in user_name_cache:
-        return user_name_cache[user_id]
-
-    name = "ناشناس"
-    try:
-        resp = requests.post(
-            f"{BASE_URL}/getChat", json={"chat_id": user_id}, timeout=15
-        )
-        result = resp.json()
-        print("RAW GETCHAT:", result)
-        chat = result.get("data", {}).get("chat", {})
-
-        first_name = chat.get("first_name", "")
-        last_name = chat.get("last_name", "")
-        title = chat.get("title", "")
-        username = chat.get("username", "")
-
-        if first_name or last_name:
-            name = f"{first_name} {last_name}".strip()
-        elif title:
-            name = title
-        elif username:
-            name = username
-    except Exception as e:
-        print("خطا در گرفتن اطلاعات کاربر:", e)
-
-    # فقط وقتی اسم واقعی پیدا شد کش کن، وگرنه "ناشناس" برای همیشه می‌مونه
-    if name != "ناشناس":
-        user_name_cache[user_id] = name
-    return name
-
-
 def handle_message(chat_id, sender_id, message_id, text):
     text = (text or "").strip()
-    sender_name = get_user_display_name(sender_id)
+
+    # دستور تنظیم اسم: "تنظیم میویی <اسم>"
+    if text.startswith(SET_NAME_PREFIX):
+        new_name = text[len(SET_NAME_PREFIX):].strip()
+        if new_name:
+            db.set_username(sender_id, new_name)
+            send_message(
+                chat_id,
+                f"✅ باشه! از این به بعد صدات می‌زنم: {new_name}",
+                reply_to_message_id=message_id,
+            )
+        else:
+            send_message(
+                chat_id,
+                "بعد از «تنظیم میویی» اسمتو بنویس، مثلاً:\nتنظیم میویی علی",
+                reply_to_message_id=message_id,
+            )
+        return
+
+    sender_name = db.get_username(sender_id)
 
     if text == "میو":
+        if not sender_name:
+            send_message(
+                chat_id,
+                "هنوز اسمتو نمی‌دونم! اول بنویس:\nتنظیم میویی <اسمت>\nبعد دوباره میو کن 🐾",
+                reply_to_message_id=message_id,
+            )
+            return
+
         ok, result = db.do_meow(sender_id, sender_name)
         if ok:
             msg = f"😽 گربه {sender_name} میو کرد و {result['points_earned']} میو پوینت گرفت!\n"
@@ -102,11 +96,12 @@ def handle_message(chat_id, sender_id, message_id, text):
                 )
 
     elif text == "میوهام":
+        display_name = sender_name or "ناشناس"
         profile = db.get_profile(sender_id)
         if profile:
             needed = db.exp_needed_for_next_level(profile["level"])
             msg = (
-                f"🪪 پروفایل میویی گربه {sender_name}\n"
+                f"🪪 پروفایل میویی گربه {display_name}\n"
                 f"⭐️ سطح: {profile['level']}\n"
                 f"🪙 میو پوینت: {profile['points']}\n"
                 f"🐾 پیشرفت تا سطح بعد: {profile['exp']}/{needed}"
