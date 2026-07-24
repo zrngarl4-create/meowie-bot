@@ -38,8 +38,8 @@ def format_number(n):
 
 
 def bold(text):
-    # روبیکا مطابق چند کتابخونه‌ی عمومی از ** برای بولد پشتیبانی می‌کنه.
-    # اگه توی ربات خودت درست رندر نشد، بگو تا این تابع رو عوض کنیم.
+    # علتش این بود که parse_mode تو درخواست ارسال نمی‌شد، نه خود سینتکس **.
+    # حالا که send_message داره parse_mode="Markdown" رو می‌فرسته، این کار می‌کنه.
     return f"**{text}**"
 
 
@@ -70,6 +70,9 @@ def get_updates(offset_id=None):
         payload["offset_id"] = offset_id
     try:
         resp = requests.post(f"{BASE_URL}/getUpdates", json=payload, timeout=15)
+        if resp.status_code != 200:
+            print("خطای HTTP در دریافت آپدیت:", resp.status_code, resp.text)
+            return None
         return resp.json()
     except Exception as e:
         print("خطا در دریافت آپدیت:", e)
@@ -77,13 +80,37 @@ def get_updates(offset_id=None):
 
 
 def send_message(chat_id, text, reply_to_message_id=None):
-    payload = {"chat_id": chat_id, "text": text}
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
     if reply_to_message_id:
         payload["reply_to_message_id"] = reply_to_message_id
     try:
-        requests.post(f"{BASE_URL}/sendMessage", json=payload, timeout=15)
+        resp = requests.post(f"{BASE_URL}/sendMessage", json=payload, timeout=15)
+        if resp.status_code != 200:
+            print("خطای HTTP در ارسال پیام (تلاش با Markdown):", resp.status_code, resp.text)
+            raise RuntimeError("send with markdown failed, will retry plain")
+        try:
+            data = resp.json()
+        except ValueError:
+            data = None
+        if isinstance(data, dict) and data.get("status") not in (None, "OK", "ok", "done", "Done"):
+            print("خطای منطقی سرور در ارسال پیام (تلاش با Markdown):", data)
+            raise RuntimeError("send with markdown returned error status, will retry plain")
+        return
     except Exception as e:
-        print("خطا در ارسال پیام:", e)
+        print("پیام با parse_mode ارسال نشد، تلاش دوباره بدون فرمت:", e)
+
+    # اگه ارسال با Markdown هر دلیلی شکست خورد، بدون فرمت (و بدون **) دوباره امتحان می‌کنیم
+    # تا حداقل خود پیام حتماً به کاربر برسه.
+    plain_text = text.replace("**", "")
+    fallback_payload = {"chat_id": chat_id, "text": plain_text}
+    if reply_to_message_id:
+        fallback_payload["reply_to_message_id"] = reply_to_message_id
+    try:
+        resp = requests.post(f"{BASE_URL}/sendMessage", json=fallback_payload, timeout=15)
+        if resp.status_code != 200:
+            print("خطای HTTP در ارسال پیام (تلاش ساده):", resp.status_code, resp.text)
+    except Exception as e:
+        print("خطا در ارسال پیام (تلاش ساده هم شکست خورد):", e)
 
 
 # ---------------------------------------------------------------------------
@@ -367,6 +394,10 @@ def bot_loop():
             if result:
                 data = result.get("data", {})
                 updates = data.get("updates", [])
+
+                if not updates and "data" not in result:
+                    # این یعنی خود API یه چیز غیرمنتظره برگردونده (نه یه پاسخ عادیِ بدون آپدیت)
+                    print("پاسخ غیرمنتظره از getUpdates:", result)
 
                 for update in updates:
                     # هر آپدیت جدا پردازش و ذخیره می‌شه؛ اگه یکیشون خطا داد
