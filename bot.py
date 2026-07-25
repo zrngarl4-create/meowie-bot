@@ -37,10 +37,13 @@ def format_number(n):
     return f"{int(n):,}"
 
 
-def bold(text):
-    # علتش این بود که parse_mode تو درخواست ارسال نمی‌شد، نه خود سینتکس **.
-    # حالا که send_message داره parse_mode="Markdown" رو می‌فرسته، این کار می‌کنه.
-    return f"**{text}**"
+def progress_bar(current, total, length=5):
+    if not total:
+        return "▰" * length
+    ratio = max(0, min(1, current / total))
+    filled = round(length * ratio)
+    filled = max(0, min(length, filled))
+    return "▰" * filled + "▱" * (length - filled)
 
 
 def rank_emoji(rank):
@@ -80,29 +83,42 @@ def get_updates(offset_id=None):
 
 
 def send_message(chat_id, text, reply_to_message_id=None):
-    payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
+    # روبیکا سینتکس مارک‌داونِ ** رو تو متن رندر نمی‌کنه؛ فرمت واقعی‌ای که
+    # قبول می‌کنه یه فیلد جدا به اسم metadata با بازه‌های بولده.
+    # چون کاربر می‌خواد کل پیام برجسته باشه، کل طول متن رو یه بازه‌ی Bold می‌گیریم.
+    metadata = None
+    if text:
+        metadata = {
+            "meta_data_parts": [
+                {"from_index": 0, "length": len(text), "type": "Bold"}
+            ]
+        }
+
+    payload = {"chat_id": chat_id, "text": text}
+    if metadata:
+        payload["metadata"] = metadata
     if reply_to_message_id:
         payload["reply_to_message_id"] = reply_to_message_id
+
     try:
         resp = requests.post(f"{BASE_URL}/sendMessage", json=payload, timeout=15)
         if resp.status_code != 200:
-            print("خطای HTTP در ارسال پیام (تلاش با Markdown):", resp.status_code, resp.text)
-            raise RuntimeError("send with markdown failed, will retry plain")
+            print("خطای HTTP در ارسال پیام (تلاش با متادیتای بولد):", resp.status_code, resp.text)
+            raise RuntimeError("send with bold metadata failed, will retry plain")
         try:
             data = resp.json()
         except ValueError:
             data = None
         if isinstance(data, dict) and data.get("status") not in (None, "OK", "ok", "done", "Done"):
-            print("خطای منطقی سرور در ارسال پیام (تلاش با Markdown):", data)
-            raise RuntimeError("send with markdown returned error status, will retry plain")
+            print("خطای منطقی سرور در ارسال پیام (تلاش با متادیتای بولد):", data)
+            raise RuntimeError("send with bold metadata returned error status, will retry plain")
         return
     except Exception as e:
-        print("پیام با parse_mode ارسال نشد، تلاش دوباره بدون فرمت:", e)
+        print("پیام با متادیتای بولد ارسال نشد، تلاش دوباره بدون فرمت:", e)
 
-    # اگه ارسال با Markdown هر دلیلی شکست خورد، بدون فرمت (و بدون **) دوباره امتحان می‌کنیم
+    # اگه ارسال با متادیتا هر دلیلی شکست خورد، ساده (بدون بولد) دوباره امتحان می‌کنیم
     # تا حداقل خود پیام حتماً به کاربر برسه.
-    plain_text = text.replace("**", "")
-    fallback_payload = {"chat_id": chat_id, "text": plain_text}
+    fallback_payload = {"chat_id": chat_id, "text": text}
     if reply_to_message_id:
         fallback_payload["reply_to_message_id"] = reply_to_message_id
     try:
@@ -123,12 +139,12 @@ def build_meow_success_message(display_name, result):
         f"🪙 +{format_number(result['points_earned'])} میو پوینت\n"
         f"💰 موجودی: {format_number(result['total_points'])} 🪙\n"
         f"⏳ {format_cooldown(result['cooldown_seconds'])} تا میوی بعدی"
-        + (f"\n\n🎉 تبریک {bold(display_name)}! سطح گربه‌ت رفت رو {result['level']} ⭐️" if result["leveled_up"] else "")
+        + (f"\n\n🎉 تبریک {display_name}! سطح گربه‌ت رفت رو {result['level']} ⭐️" if result["leveled_up"] else "")
     )
 
 
 def build_cooldown_message(display_name, remaining):
-    return f"⌛️ گربه {bold(display_name)} هنوز خسته‌ست، {format_cooldown(remaining)} دیگه صبر کن."
+    return f"⌛️ گربه {display_name} هنوز خسته‌ست، {format_cooldown(remaining)} دیگه صبر کن."
 
 
 def build_leaderboard_message(rows, scope_label, viewer_rank=None, viewer_points=None):
@@ -142,8 +158,7 @@ def build_leaderboard_message(rows, scope_label, viewer_rank=None, viewer_points
     ]
     for i, row in enumerate(rows):
         rank = i + 1
-        name = bold(row["username"]) if rank <= 3 else row["username"]
-        lines.append(f"{rank_emoji(rank)} {name}")
+        lines.append(f"{rank_emoji(rank)} {row['username']}")
         lines.append(f"└ 💰 {format_number(row['points'])} 🪙")
         if rank <= 3:
             lines.append(f"└ ⭐️ سطح {row['level']}")
@@ -161,14 +176,43 @@ def build_leaderboard_message(rows, scope_label, viewer_rank=None, viewer_points
 def build_transfer_success_message(sender_name, receiver_name, amount, receiver_new_points):
     return (
         "🧲 انتقال میویی\n\n"
-        f"🐈 گربه {bold(sender_name)}\n"
+        f"🐈 گربه {sender_name}\n"
         f"└─ 💸 {format_number(amount)} 🪙\n"
         "        ⬇️\n"
-        f"🐈 گربه {bold(receiver_name)}\n\n"
+        f"🐈 گربه {receiver_name}\n\n"
         "✅ انتقال با موفقیت انجام شد.\n\n"
         "💰 موجودی جدید:\n"
         f"{format_number(receiver_new_points)} 🪙"
     )
+
+
+def build_profile_message(display_name, user_id, profile):
+    points_rank = db.get_rank_global(user_id, order_by="points")
+    meows_rank = db.get_rank_global(user_id, order_by="total_meows")
+    total_meows = profile.get("total_meows") or 0
+    level = profile["level"]
+
+    if level >= db.MAX_LEVEL:
+        level_line = f"╯─ ⭐️ سطح : {level} (حداکثر سطح!) {progress_bar(1, 1)}"
+    else:
+        needed = db.exp_needed_for_next_level(level)
+        level_line = f"╯─ ⭐️ سطح : {level} | {profile['exp']} / {needed} {progress_bar(profile['exp'], needed)}"
+
+    lines = [
+        "╮──「 🐱 پروفایل میویی 🐱 」",
+        "",
+        f"┐─ 👤 کاربر : {display_name}",
+        f"┘─ 🪪 آیدی : {user_id}",
+        "",
+        f"┐─ 💰 میو پوینت ها : {format_number(profile['points'])} 🪙",
+        f"┘─ 🎖️ رتبه ({format_number(points_rank)})" if points_rank else "┘─ 🎖️ رتبه (—)",
+        "",
+        f"┐─ 🐾 میو میو ها : {format_number(total_meows)}",
+        f"┘─ 🎖️ رتبه ({format_number(meows_rank)})" if meows_rank else "┘─ 🎖️ رتبه (—)",
+        "",
+        level_line,
+    ]
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -286,7 +330,7 @@ def handle_message(chat_id, sender_id, message_id, text, reply_to_message_id):
             db.set_username(sender_id, new_name)
             send_message(
                 chat_id,
-                f"✅ باشه! از این به بعد صدات می‌زنم: {bold(new_name)}",
+                f"✅ باشه! از این به بعد صدات می‌زنم: {new_name}",
                 reply_to_message_id=message_id,
             )
         else:
@@ -348,15 +392,33 @@ def handle_message(chat_id, sender_id, message_id, text, reply_to_message_id):
         display_name = sender_name or "ناشناس"
         profile = db.get_profile(sender_id)
         if profile:
-            needed = db.exp_needed_for_next_level(profile["level"])
-            msg = (
-                f"🪪 پروفایل میویی گربه {bold(display_name)}\n"
-                f"⭐️ سطح: {profile['level']}\n"
-                f"🪙 میو پوینت: {format_number(profile['points'])}\n"
-                f"🐾 پیشرفت تا سطح بعد: {profile['exp']}/{needed}"
-            )
+            msg = build_profile_message(display_name, sender_id, profile)
         else:
             msg = "هنوز هیچ میویی نکردی! بنویس 'میو' تا شروع کنی 🐾"
+        send_message(chat_id, msg, reply_to_message_id=message_id)
+
+    elif text == "میوهاش":
+        if not reply_to_message_id:
+            send_message(
+                chat_id,
+                "برای دیدن پروفایل یکی دیگه، باید روی پیامش ریپلای بزنی و بنویسی «میوهاش».",
+                reply_to_message_id=message_id,
+            )
+            return
+        target_id = db.get_sender_of_message(reply_to_message_id)
+        if not target_id:
+            send_message(
+                chat_id,
+                "نتونستم بفهمم این پیام برای کیه (شاید خیلی قدیمیه).",
+                reply_to_message_id=message_id,
+            )
+            return
+        target_name = db.get_username(target_id) or "ناشناس"
+        profile = db.get_profile(target_id)
+        if profile:
+            msg = build_profile_message(target_name, target_id, profile)
+        else:
+            msg = f"{target_name} هنوز هیچ میویی نکرده!"
         send_message(chat_id, msg, reply_to_message_id=message_id)
 
 
