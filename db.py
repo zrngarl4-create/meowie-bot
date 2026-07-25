@@ -20,7 +20,11 @@ def put_conn(conn):
 
 
 COOLDOWN_SECONDS = 300  # فاصله ثابت بین هر میو: ۵ دقیقه
-EXP_NEEDED_PER_LEVEL = 5
+
+# سطح ۱: برای رفتن به سطح بعد ۳۰ میو لازمه. هر سطح بعدی، ۵ تا بیشتر از قبلی نیاز داره.
+EXP_BASE_NEEDED = 30
+EXP_STEP_PER_LEVEL = 5
+MAX_LEVEL = 120
 
 MIN_TRANSFER = 500
 MAX_TRANSFER = 10000
@@ -78,7 +82,9 @@ def set_username(user_id, username):
 
 
 def exp_needed_for_next_level(level):
-    return level * EXP_NEEDED_PER_LEVEL
+    if level >= MAX_LEVEL:
+        return None  # دیگه سطح بعدی‌ای وجود نداره
+    return EXP_BASE_NEEDED + (level - 1) * EXP_STEP_PER_LEVEL
 
 
 def ensure_extra_columns():
@@ -115,10 +121,17 @@ def do_meow(user_id, username):
     new_total_meows = (user.get("total_meows") or 0) + 1
 
     leveled_up = False
-    while new_exp >= exp_needed_for_next_level(new_level):
-        new_exp -= exp_needed_for_next_level(new_level)
+    while new_level < MAX_LEVEL:
+        needed = exp_needed_for_next_level(new_level)
+        if new_exp < needed:
+            break
+        new_exp -= needed
         new_level += 1
         leveled_up = True
+
+    if new_level >= MAX_LEVEL:
+        new_level = MAX_LEVEL
+        new_exp = 0  # سطح ماکسیموم، دیگه پیشرفتی برای نمایش نیست
 
     conn = get_conn()
     try:
@@ -477,4 +490,3 @@ def cleanup_old_seen_messages(days=SEEN_MESSAGES_RETENTION_DAYS):
         cur.close()
     finally:
         put_conn(conn)
-    
