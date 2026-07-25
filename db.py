@@ -21,7 +21,11 @@ def put_conn(conn):
 
 COOLDOWN_SECONDS = 300  # فاصله ثابت بین هر میو: ۵ دقیقه
 
-# سطح ۱: برای رفتن به سطح بعد ۳۰ میو لازمه. هر سطح بعدی، ۵ تا بیشتر از قبلی نیاز داره.
+# سطح‌های ۱ تا ۵: برای جذب بازیکن‌های جدید، فقط ۱۰ میو لازمه.
+# از سطح ۶ به بعد برمی‌گرده به فرمول اصلی (۳۰ + ۵ به ازای هر سطح).
+EARLY_LEVEL_THRESHOLD = 5
+EARLY_LEVEL_EXP_NEEDED = 10
+
 EXP_BASE_NEEDED = 30
 EXP_STEP_PER_LEVEL = 5
 MAX_LEVEL = 120
@@ -84,6 +88,8 @@ def set_username(user_id, username):
 def exp_needed_for_next_level(level):
     if level >= MAX_LEVEL:
         return None  # دیگه سطح بعدی‌ای وجود نداره
+    if level <= EARLY_LEVEL_THRESHOLD:
+        return EARLY_LEVEL_EXP_NEEDED
     return EXP_BASE_NEEDED + (level - 1) * EXP_STEP_PER_LEVEL
 
 
@@ -214,6 +220,37 @@ def record_group_membership(chat_id, user_id):
             """,
             (chat_id, user_id),
         )
+        conn.commit()
+        cur.close()
+    finally:
+        put_conn(conn)
+
+
+def record_message_context(chat_id, sender_id, message_id):
+    """
+    نسخه‌ی ترکیبی record_group_membership + record_seen_message که تو یه
+    اتصال دیتابیس (نه دوتا) انجامش می‌ده تا هر پیام یه رفت‌وبرگشت شبکه‌ی
+    کمتر با دیتابیس داشته باشه و ربات سریع‌تر جواب بده.
+    """
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO group_members (chat_id, user_id) VALUES (%s, %s)
+            ON CONFLICT (chat_id, user_id) DO NOTHING
+            """,
+            (chat_id, user_id),
+        )
+        if message_id:
+            cur.execute(
+                """
+                INSERT INTO seen_messages (message_id, chat_id, sender_id)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (message_id) DO NOTHING
+                """,
+                (str(message_id), str(chat_id), str(sender_id)),
+            )
         conn.commit()
         cur.close()
     finally:
@@ -490,3 +527,190 @@ def cleanup_old_seen_messages(days=SEEN_MESSAGES_RETENTION_DAYS):
         cur.close()
     finally:
         put_conn(conn)
+
+
+def add_points(user_id, amount):
+    """
+    مستقیم به موجودی یه کاربر اضافه می‌کنه (بدون کم کردن از کسی).
+    فقط باید از یه مسیر ادمین‌محور صدا زده بشه.
+    """
+    conn = get_conn()
+    try:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(
+            "UPDATE meowie_users SET points = points + %s WHERE user_id = %s RETURNING points",
+            (amount, user_id),
+        )
+        row = cur.fetchone()
+        conn.commit()
+        cur.close()
+        return row["points"] if row else None
+    finally:
+        put_conn(conn)
+
+
+def ensure_admin_actions_table():
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS admin_actions (
+                id SERIAL PRIMARY KEY,
+                admin_id TEXT NOT NULL,
+                target_id TEXT NOT NULL,
+                amount INTEGER NOT NULL,
+                action_type TEXT NOT NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        conn.commit()
+        cur.close()
+    finally:
+        put_conn(conn)
+
+
+def record_admin_action(admin_id, target_id, amount, action_type):
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO admin_actions (admin_id, target_id, amount, action_type)
+            VALUES (%s, %s, %s, %s)
+            """,
+            (str(admin_id), str(target_id), amount, action_type),
+        )
+        conn.commit()
+        cur.close()
+    finally:
+        put_conn(conn)
+
+
+# ---------------------------------------------------------------------------
+# سیستم پیشی (Cats)
+# ---------------------------------------------------------------------------
+
+CAT_PRICE = 500
+CAT_MIN_LEVEL = 2
+
+CAT_MAX_RANK = 20
+CAT_BASE_RANK_CAP = 10       # سقف لولِ رتبه‌ی ۱
+CAT_RANK_CAP_STEP = 5        # هر رتبه، ۵ لول بیشتر از رتبه‌ی قبل نیاز داره
+
+CAT_PRODUCTION_PER_HOUR_PER_POWER = 40   # تولید در ساعت به ازای هر واحد «پاور لول»
+CAT_CAPACITY_HOURS = 5                   # صندوقچه حداکثر معادل ۵ ساعت تولید جا داره
+CAT_UPGRADE_COST_MULTIPLIER = 5          # هزینه‌ی ارتقا = این عدد × تولید ساعتی فعلی
+
+
+def cat_rank_cap(rank):
+    """سقف لول یه رتبه‌ی مشخص (چند لول باید بگیره تا بره رتبه‌ی بعد)."""
+    return CAT_BASE_RANK_CAP + CAT_RANK_CAP_STEP * (rank - 1)
+
+
+def cat_rank_offset(rank):
+    """جمع سقفِ لول همه‌ی رتبه‌های قبل از این رتبه."""
+    total = 0
+    for r in range(1, rank):
+        total += cat_rank_cap(r)
+    return total
+
+
+def cat_power_level(rank, level):
+    """یه عدد پیوسته که هرچی پیشی قوی‌تر میشه (چه با لول‌گرفتن چه با ارتقای رتبه) بزرگ‌تر میشه."""
+    return cat_rank_offset(rank) + level
+
+
+def cat_production_per_hour(rank, level):
+    power = cat_power_level(rank, level)
+    return max(1, power * CAT_PRODUCTION_PER_HOUR_PER_POWER)
+
+
+def cat_capacity(rank, level):
+    return cat_production_per_hour(rank, level) * CAT_CAPACITY_HOURS
+
+
+def cat_upgrade_cost(rank, level):
+    return cat_production_per_hour(rank, level) * CAT_UPGRADE_COST_MULTIPLIER
+
+
+def cat_is_maxed(rank, level):
+    return rank >= CAT_MAX_RANK and level >= cat_rank_cap(CAT_MAX_RANK)
+
+
+def ensure_cats_table():
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS cats (
+                owner_id TEXT PRIMARY KEY,
+                name TEXT,
+                rank INTEGER NOT NULL DEFAULT 1,
+                level INTEGER NOT NULL DEFAULT 1,
+                total_collected BIGINT NOT NULL DEFAULT 0,
+                last_collect_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                created_at TIMESTAMP NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        conn.commit()
+        cur.close()
+    finally:
+        put_conn(conn)
+
+
+def get_cat(owner_id):
+    conn = get_conn()
+    try:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SELECT * FROM cats WHERE owner_id = %s", (owner_id,))
+        row = cur.fetchone()
+        cur.close()
+        return row
+    finally:
+        put_conn(conn)
+
+
+def buy_cat(owner_id, amount=CAT_PRICE, name=None):
+    """
+    خرید پیشی: هزینه رو از موجودی کاربر کم می‌کنه و یه ردیف تو cats می‌سازه.
+    هر کاربر فقط یه پیشی می‌تونه داشته باشه (owner_id کلید اصلیه).
+    """
+    conn = get_conn()
+    try:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        cur.execute("SELECT 1 FROM cats WHERE owner_id = %s", (owner_id,))
+        if cur.fetchone():
+            cur.close()
+            return False, {"reason": "already_has_cat"}
+
+        cur.execute(
+            "UPDATE meowie_users SET points = points - %s WHERE user_id = %s AND points >= %s RETURNING points",
+            (amount, owner_id, amount),
+        )
+        row = cur.fetchone()
+        if not row:
+            conn.rollback()
+            cur.close()
+            return False, {"reason": "insufficient"}
+
+        cur.execute(
+            """
+            INSERT INTO cats (owner_id, name, rank, level, last_collect_at)
+            VALUES (%s, %s, 1, 1, NOW())
+            """,
+            (owner_id, name),
+        )
+        conn.commit()
+        cur.close()
+        return True, {"remaining_points": row["points"]}
+    finally:
+        put_conn(conn)
+
+
+def collect_cat_points(owner_id):
+   
